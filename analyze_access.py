@@ -2,6 +2,9 @@ import re
 import collections
 import os
 import ipaddress
+import json
+import urllib.request
+import time
 
 log_file_path = "access.log"
 report_file_path = "suspicious_ips_report.txt"
@@ -105,6 +108,56 @@ try:
                 'reasons': list(reasons)
             }
 
+    # --- New: IP Geolocation Lookup ---
+    country_mapping = {
+        'TW': '台灣', 'CN': '中國', 'HK': '香港', 'MO': '澳門',
+        'US': '美國', 'JP': '日本', 'KR': '韓國', 'SG': '新加坡',
+        'MY': '馬來西亞', 'TH': '泰國', 'VN': '越南', 'PH': '菲律賓',
+        'ID': '印尼', 'IN': '印度', 'AU': '澳洲', 'NZ': '紐西蘭',
+        'GB': '英國', 'DE': '德國', 'FR': '法國', 'IT': '義大利',
+        'ES': '西班牙', 'NL': '荷蘭', 'CH': '瑞士', 'SE': '瑞典',
+        'NO': '挪威', 'DK': '丹麥', 'FI': '芬蘭', 'RU': '俄羅斯',
+        'CA': '加拿大', 'BR': '巴西', 'AR': '阿根廷', 'ZA': '南非',
+        'UA': '烏克蘭', 'PL': '波蘭', 'IE': '愛爾蘭', 'BE': '比利時',
+        'AT': '奧地利', 'TR': '土耳其', 'IL': '以色列', 'AE': '阿聯酋',
+        'MX': '墨西哥', 'PT': '葡萄牙', 'GR': '希臘', 'CZ': '捷克',
+        'HU': '匈牙利', 'RO': '羅馬尼亞', 'CL': '智利', 'CO': '哥倫比亞'
+    }
+
+    ip_to_country = {}
+    if suspicious_ips:
+        unique_ips = list(suspicious_ips.keys())
+        print(f"正在查詢 {len(unique_ips)} 個可疑 IP 的地理位置資訊...")
+        
+        # Batch lookup (max 100 per request for ip-api.com)
+        for i in range(0, len(unique_ips), 100):
+            chunk = unique_ips[i:i+100]
+            batch_data = json.dumps([{"query": ip} for ip in chunk]).encode('utf-8')
+            try:
+                req = urllib.request.Request("http://ip-api.com/batch", data=batch_data)
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    results = json.loads(response.read().decode('utf-8'))
+                    for res in results:
+                        query_ip = res.get('query')
+                        if res.get('status') == 'success':
+                            code = res.get('countryCode')
+                            country = country_mapping.get(code, res.get('country', '未知'))
+                            ip_to_country[query_ip] = country
+                        else:
+                            ip_to_country[query_ip] = "私有位址/未知"
+            except Exception as e:
+                print(f"警告: 無法查詢 IP 批次 ({i}-{i+len(chunk)}): {e}")
+                for ip in chunk:
+                    ip_to_country[ip] = "查詢失敗"
+            
+            # Avoid hitting rate limits if there are many batches
+            if i + 100 < len(unique_ips):
+                time.sleep(1.5)
+
+    # Add country info to suspicious_ips
+    for ip in suspicious_ips:
+        suspicious_ips[ip]['country'] = ip_to_country.get(ip, "未知")
+
     # Output to report file
     with open(report_file_path, 'w', encoding='utf-8') as f:
         f.write("可疑 IP 行為報告\n")
@@ -123,7 +176,8 @@ try:
             # Sort IPs within group by count descending
             items_sorted = sorted(items, key=lambda x: x[1], reverse=True)
             for ip, count in items_sorted:
-                f.write(f"IP來源: {ip} 總請求次數: {count}\n")
+                country = suspicious_ips[ip].get('country', '未知')
+                f.write(f"IP來源: {ip} ({country}) 總請求次數: {count}\n")
             f.write("-" * 40 + "\n\n")
 
     # Output to list file

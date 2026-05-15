@@ -1,1 +1,2 @@
 python analyze_access.py
+pause
